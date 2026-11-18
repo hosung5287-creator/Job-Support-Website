@@ -200,6 +200,7 @@ export default function Page() {
   const [sort, setSort] = useState<Sort>('score');
   const [grades, setGrades] = useState<Grade[]>([]);
   const [query, setQuery] = useState('');
+  const [showAlways, setShowAlways] = useState(true); // 상시 공고(마감일 없는 상시채용·채용시) 표시 여부
   const { statuses, setStatus, savedTo } = useStatuses();
 
   const [task, setTask] = useState<TaskState>({ running: false });
@@ -293,6 +294,7 @@ export default function Page() {
     const q = query.trim().toLowerCase();
     return active
       .filter((j) => !grades.length || grades.includes(j.grade))
+      .filter((j) => showAlways || daysLeft(j.deadline) !== null)
       .filter(
         (j) =>
           !q ||
@@ -305,7 +307,8 @@ export default function Page() {
             ? postingId(b) - postingId(a)
             : b.score - a.score,
       );
-  }, [active, grades, query, sort]);
+  }, [active, grades, showAlways, query, sort]);
+  const alwaysCount = active.filter((j) => daysLeft(j.deadline) === null).length;
 
   const total = active.length;
   const average = total ? (active.reduce((sum, j) => sum + j.score, 0) / total).toFixed(1) : '–';
@@ -416,6 +419,16 @@ export default function Page() {
               </button>
             ))}
           </div>
+          <button
+            className="switch"
+            role="switch"
+            aria-checked={showAlways}
+            onClick={() => setShowAlways(!showAlways)}
+            title="마감일이 없는 상시채용·채용시 공고"
+          >
+            <span className="switch-track" aria-hidden="true" />
+            상시 공고 {alwaysCount}건 {showAlways ? '보임' : '숨김'}
+          </button>
           <select className="chip" aria-label="정렬" value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
             {Object.entries(SORTS).map(([key, label]) => (
               <option key={key} value={key}>
