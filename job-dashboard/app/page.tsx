@@ -23,13 +23,37 @@ type Job = {
   closed?: boolean;
 };
 type StatusFile = { updatedAt: string | null; statuses: Record<string, Status> };
-type RefreshState = {
+type TaskState = {
   running: boolean;
+  kind?: 'refresh' | 'resume';
   startedAt?: number;
   phase?: string;
   error?: string;
-  result?: { added: number; closed: number; pending: number; failed: number };
+  result?: { added: number; closed: number; reevaluated: number; pending: number; failed: number };
 };
+type ResumeInfo = { name: string; size: number; uploadedAt: string; appliedAt?: string };
+const MAX_PDF = 10 * 1024 * 1024;
+const formatSize = (bytes: number) =>
+  bytes < 1024 * 1024 ? `${Math.round(bytes / 1024)}KB` : `${(bytes / 1024 / 1024).toFixed(1)}MB`;
+const formatDate = (iso: string) =>
+  new Date(iso).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+// 작업 결과 한 줄 요약. 새로 고침과 이력서 반영이 같은 작업 상태를 쓴다.
+function taskMessage(t: TaskState) {
+  const name = t.kind === 'resume' ? '이력서 반영' : '공고 새로 고침';
+  if (t.running) return null;
+  if (t.error) return `${name} 실패: ${t.error}`;
+  if (!t.result) return null;
+  const r = t.result;
+  return (
+    `${name} 완료: ` +
+    (t.kind === 'resume' ? `공고 ${r.reevaluated}건 다시 평가, ` : '') +
+    `신규 ${r.added}건 추가, 마감 ${r.closed}건 정리` +
+    (r.pending ? `, 평가 대기 ${r.pending}건(다음 새로 고침 때 평가)` : '') +
+    (r.failed ? `, 평가 실패 ${r.failed}건` : '') +
+    '.'
+  );
+}
 
 const GRADES: Grade[] = ['A', 'B', 'C', 'D'];
 const SORTS = { score: '점수순', company: '회사순', latest: '최신순' } as const;
@@ -178,43 +202,82 @@ export default function Page() {
   const [query, setQuery] = useState('');
   const { statuses, setStatus, savedTo } = useStatuses();
 
-  const [refresh, setRefresh] = useState<RefreshState>({ running: false });
+  const [task, setTask] = useState<TaskState>({ running: false });
+  const [resume, setResume] = useState<ResumeInfo | null>(null);
+  const [picked, setPicked] = useState<File | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [uploadError, setUploadError] = useState('');
+  const dialogRef = useRef<HTMLDialogElement>(null);
 
   const loadJobs = () =>
     fetch('/data/ranked-jobs.json', { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then(setJobs, (e) => setError(String(e?.message ?? e)));
 
-  // 새로 고침이 끝날 때까지 3초마다 상태를 확인하고, 끝나면 공고 목록을 다시 읽는다.
-  const pollRefresh = async () => {
-    const next: RefreshState = await fetch('/refresh', { cache: 'no-store' }).then(
+  const loadResume = () =>
+    fetch('/resume', { cache: 'no-store' })
+      .then((r) => r.json())
+      .then(
+        (d: { resume: ResumeInfo | null }) => setResume(d.resume),
+        () => {},
+      );
+
+  // 작업(새로 고침, 이력서 반영)이 끝날 때까지 3초마다 상태를 확인하고, 끝나면 공고 목록과 이력서 정보를 다시 읽는다.
+  const pollTask = async () => {
+    const next: TaskState = await fetch('/refresh', { cache: 'no-store' }).then(
       (r) => r.json(),
       () => ({ running: false, error: '서버에 연결하지 못했습니다' }),
     );
-    setRefresh(next);
-    if (next.running) setTimeout(pollRefresh, 3000);
-    else if (next.result) void loadJobs();
+    setTask(next);
+    if (next.running) setTimeout(pollTask, 3000);
+    else if (next.result) {
+      void loadJobs();
+      void loadResume();
+    }
   };
 
   const startRefresh = async () => {
-    const next: RefreshState = await fetch('/refresh', { method: 'POST' }).then(
+    const next: TaskState = await fetch('/refresh', { method: 'POST' }).then(
       (r) => r.json(),
       () => ({ running: false, error: '서버에 연결하지 못했습니다' }),
     );
-    setRefresh(next);
-    if (next.running) setTimeout(pollRefresh, 3000);
+    setTask(next);
+    if (next.running) setTimeout(pollTask, 3000);
+  };
+
+  // 끌어다 놓기와 "PC에서 찾기"가 함께 쓰는 파일 확인.
+  const pickFile = (file?: File | null) => {
+    setUploadError('');
+    if (!file) return;
+    if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') return setUploadError('PDF 파일만 넣을 수 있습니다.');
+    if (file.size > MAX_PDF) return setUploadError('PDF는 10MB 이하만 넣을 수 있습니다.');
+    setPicked(file);
+  };
+
+  const saveResume = async () => {
+    if (!picked) return;
+    const form = new FormData();
+    form.append('file', picked);
+    const res = await fetch('/resume', { method: 'POST', body: form }).catch(() => null);
+    const body = res ? await res.json().catch(() => ({})) : {};
+    if (!res || !res.ok) return setUploadError(body.error ?? '저장하지 못했습니다. 서버가 켜져 있는지 확인하세요.');
+    setResume(body.resume);
+    setTask(body.task);
+    setPicked(null);
+    setTimeout(pollTask, 3000);
   };
 
   useEffect(() => {
     void loadJobs();
-    // 페이지를 다시 열었을 때 진행 중인 새로 고침이 있으면 이어서 보여 준다.
+    void loadResume();
+    // 페이지를 다시 열었을 때 진행 중인 작업이 있으면 이어서 보여 준다.
     fetch('/refresh', { cache: 'no-store' })
       .then((r) => r.json())
       .then(
-        (s: RefreshState) => {
-          if (!s.running) return;
-          setRefresh(s);
-          setTimeout(pollRefresh, 3000);
+        (t: TaskState) => {
+          if (!t.running) return;
+          setTask(t);
+          setTimeout(pollTask, 3000);
         },
         () => {},
       );
@@ -246,7 +309,10 @@ export default function Page() {
 
   const total = active.length;
   const average = total ? (active.reduce((sum, j) => sum + j.score, 0) / total).toFixed(1) : '–';
-  const elapsed = refresh.startedAt ? Math.max(0, Math.round((Date.now() - refresh.startedAt) / 1000)) : 0;
+  const elapsed = task.startedAt ? Math.max(0, Math.round((Date.now() - task.startedAt) / 1000)) : 0;
+  const progress = task.running
+    ? `${task.kind === 'resume' ? '이력서 반영' : '공고 새로 고침'}: ${task.phase ?? ''} (경과 ${Math.floor(elapsed / 60)}분 ${elapsed % 60}초)`
+    : taskMessage(task);
 
   const gradeBadge = (job: Job) => <span className={`grade grade-${job.grade}`}>{job.grade}</span>;
   const statusSelect = (job: Job) => (
@@ -282,10 +348,15 @@ export default function Page() {
   return (
     <>
       <header className="global-nav">
-        <span>취업 상황판</span>
         <div className="nav-actions">
-          <button className="nav-button" onClick={startRefresh} disabled={refresh.running}>
-            {refresh.running ? '새로 고치는 중…' : '공고 새로 고침'}
+          <span>취업 상황판</span>
+          <button className="nav-button" onClick={() => dialogRef.current?.showModal()}>
+            이력서 넣기
+          </button>
+        </div>
+        <div className="nav-actions">
+          <button className="nav-button" onClick={startRefresh} disabled={task.running}>
+            {task.running && task.kind === 'refresh' ? '새로 고치는 중…' : '공고 새로 고침'}
           </button>
           <a href="#jobs">공고</a>
         </div>
@@ -294,6 +365,12 @@ export default function Page() {
       <section className="tile-dark">
         <h1>취업 상황판</h1>
         <p className="lead">사람인 공고를 이력서 기준으로 평가한 결과</p>
+        <p className="resume-line">
+          기준 이력서:{' '}
+          {resume
+            ? `${resume.name} (${formatDate(resume.appliedAt ?? resume.uploadedAt)}${resume.appliedAt ? '' : ', 반영 전'})`
+            : '처음 만든 cv.md'}
+        </p>
         <dl className="stats">
           <div>
             <dt>총 공고</dt>
@@ -361,14 +438,7 @@ export default function Page() {
           {savedTo === 'browser' && '파일에 저장하지 못해 브라우저에만 백업했습니다.'}
         </p>
         <p className="note" role="status">
-          {refresh.running && `공고 새로 고침: ${refresh.phase ?? ''} (경과 ${Math.floor(elapsed / 60)}분 ${elapsed % 60}초)`}
-          {!refresh.running &&
-            refresh.result &&
-            `새로 고침 완료: 신규 ${refresh.result.added}건 추가, 마감 ${refresh.result.closed}건 정리` +
-              (refresh.result.pending ? `, 평가 대기 ${refresh.result.pending}건(다음 새로 고침 때 평가)` : '') +
-              (refresh.result.failed ? `, 평가 실패 ${refresh.result.failed}건` : '') +
-              '.'}
-          {!refresh.running && refresh.error && `새로 고침 실패: ${refresh.error}`}
+          {progress}
         </p>
 
         {error ? (
@@ -444,6 +514,57 @@ export default function Page() {
           </div>
         )}
       </main>
+
+      <dialog ref={dialogRef} className="resume-dialog" onClose={() => setUploadError('')}>
+        <h2>이력서 넣기</h2>
+        <p className="note">
+          현재 기준 이력서:{' '}
+          {resume ? `${resume.name} · ${formatSize(resume.size)} · ${formatDate(resume.uploadedAt)}` : '처음 만든 cv.md'}
+        </p>
+        <div
+          className={`drop${dragging ? ' drop-active' : ''}`}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragging(true);
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragging(false);
+            pickFile(e.dataTransfer.files[0]);
+          }}
+        >
+          <p>PDF를 여기에 끌어다 놓으세요</p>
+          <label className="button-secondary">
+            PC에서 찾기
+            <input type="file" accept="application/pdf,.pdf" hidden onChange={(e) => pickFile(e.target.files?.[0])} />
+          </label>
+          {picked && (
+            <p className="picked">
+              {picked.name} · {formatSize(picked.size)}
+            </p>
+          )}
+        </div>
+        <p className="note">
+          저장하면 이력서를 읽어 이력서·프로필·검색 조건을 새로 만들고, 그에 맞는 공고를 다시 모아 모두 다시 평가합니다. 15~20분
+          걸리고 Claude 사용량을 씁니다. 기존 이력서와 공고 점수는 백업됩니다. 기존 심층 조사·자소서는 이전 이력서 기준이니 필요하면
+          다시 만드세요.
+        </p>
+        {uploadError && (
+          <p className="note" role="alert">
+            {uploadError}
+          </p>
+        )}
+        {task.running && <p className="note">{progress}</p>}
+        <div className="report-actions">
+          <button className="button-primary" disabled={!picked || task.running} onClick={saveResume}>
+            저장하고 공고 적용
+          </button>
+          <button className="button-secondary" onClick={() => dialogRef.current?.close()}>
+            닫기
+          </button>
+        </div>
+      </dialog>
 
       <footer>공고 data/ranked-jobs.json · 지원 상태 data/status.json</footer>
     </>

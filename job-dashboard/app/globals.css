@@ -92,6 +92,63 @@ ul {
   opacity: 0.6;
 }
 
+.resume-line {
+  margin: -36px 0 40px;
+  color: var(--body-muted);
+  font-size: 14px;
+  line-height: 1.43;
+  letter-spacing: -0.224px;
+}
+
+/* 이력서 넣기 창: 끌어다 놓기 영역과 "PC에서 찾기" */
+.resume-dialog {
+  width: min(560px, calc(100% - 32px));
+  padding: 32px;
+  border: 1px solid var(--hairline);
+  border-radius: 18px;
+  background: var(--canvas);
+  color: var(--ink);
+}
+
+.resume-dialog::backdrop {
+  background: rgb(0 0 0 / 0.4);
+}
+
+.resume-dialog h2 {
+  margin: 0 0 8px;
+}
+
+.drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0;
+  padding: 32px 16px;
+  border: 2px dashed var(--hairline);
+  border-radius: 18px;
+  background: var(--parchment);
+  text-align: center;
+}
+
+.drop-active {
+  border-color: var(--primary-focus);
+  background: var(--pearl);
+}
+
+.drop label {
+  display: inline-flex;
+  align-items: center;
+}
+
+.picked {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.43;
+  letter-spacing: -0.224px;
+  overflow-wrap: anywhere;
+}
+
 /* product-tile-dark: 상단 요약 */
 .tile-dark {
   padding: 80px 24px;
@@ -365,6 +422,12 @@ h3 {
 .button-primary:active,
 .button-secondary:active {
   transform: scale(0.95);
+}
+
+.button-primary:disabled {
+  cursor: default;
+  opacity: 0.4;
+  transform: none;
 }
 
 /* button-secondary-pill: 파란 윤곽선만 있는 보조 액션 */
