@@ -1,0 +1,13 @@
+# 개인 정보(이력서, 프로필, 자소서, 지원 기록, 공고 평가)는 저장소에 올리지 않는다. 내 컴퓨터에만 둔다.
+/cv.md
+/config/
+/interview-prep/
+/modes/
+/output/
+/reports/
+/data/*
+!/data/rank-saramin.mjs
+
+node_modules
+.next
+*.tsbuildinfo
