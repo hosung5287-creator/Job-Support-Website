@@ -86,9 +86,11 @@ const ranked = jobs
       employment: job.employment,
       salary: job.salary,
       jd_source: job.jd_source,
+      closed: Boolean(job.closed),
     };
   })
-  .sort((a, b) => b.score - a.score || b.breakdown.job_fit - a.breakdown.job_fit || a.company.localeCompare(b.company, 'ko'))
+  // 마감된 공고는 순위 맨 뒤로 보낸다(화면은 지원 상태가 없으면 숨긴다).
+  .sort((a, b) => Number(a.closed) - Number(b.closed) || b.score - a.score || b.breakdown.job_fit - a.breakdown.job_fit || a.company.localeCompare(b.company, 'ko'))
   .map((job, i) => ({ rank: i + 1, ...job }));
 
 writeFileSync(join(here, 'ranked-jobs.json'), JSON.stringify(ranked, null, 2) + '\n', 'utf8');

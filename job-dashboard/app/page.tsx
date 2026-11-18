@@ -20,8 +20,16 @@ type Job = {
   education?: string;
   employment?: string;
   salary?: string;
+  closed?: boolean;
 };
 type StatusFile = { updatedAt: string | null; statuses: Record<string, Status> };
+type RefreshState = {
+  running: boolean;
+  startedAt?: number;
+  phase?: string;
+  error?: string;
+  result?: { added: number; closed: number; pending: number; failed: number };
+};
 
 const GRADES: Grade[] = ['A', 'B', 'C', 'D'];
 const SORTS = { score: '점수순', company: '회사순', latest: '최신순' } as const;
@@ -170,15 +178,57 @@ export default function Page() {
   const [query, setQuery] = useState('');
   const { statuses, setStatus, savedTo } = useStatuses();
 
-  useEffect(() => {
+  const [refresh, setRefresh] = useState<RefreshState>({ running: false });
+
+  const loadJobs = () =>
     fetch('/data/ranked-jobs.json', { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then(setJobs, (e) => setError(String(e?.message ?? e)));
+
+  // 새로 고침이 끝날 때까지 3초마다 상태를 확인하고, 끝나면 공고 목록을 다시 읽는다.
+  const pollRefresh = async () => {
+    const next: RefreshState = await fetch('/refresh', { cache: 'no-store' }).then(
+      (r) => r.json(),
+      () => ({ running: false, error: '서버에 연결하지 못했습니다' }),
+    );
+    setRefresh(next);
+    if (next.running) setTimeout(pollRefresh, 3000);
+    else if (next.result) void loadJobs();
+  };
+
+  const startRefresh = async () => {
+    const next: RefreshState = await fetch('/refresh', { method: 'POST' }).then(
+      (r) => r.json(),
+      () => ({ running: false, error: '서버에 연결하지 못했습니다' }),
+    );
+    setRefresh(next);
+    if (next.running) setTimeout(pollRefresh, 3000);
+  };
+
+  useEffect(() => {
+    void loadJobs();
+    // 페이지를 다시 열었을 때 진행 중인 새로 고침이 있으면 이어서 보여 준다.
+    fetch('/refresh', { cache: 'no-store' })
+      .then((r) => r.json())
+      .then(
+        (s: RefreshState) => {
+          if (!s.running) return;
+          setRefresh(s);
+          setTimeout(pollRefresh, 3000);
+        },
+        () => {},
+      );
   }, []);
+
+  // 마감된 공고는 지원 상태가 "미지원"이면 숨기고, 지원 기록이 있으면 계속 보여 준다.
+  const active = useMemo(
+    () => (jobs ?? []).filter((j) => !j.closed || (statuses[j.url] ?? STATUSES[0]) !== STATUSES[0]),
+    [jobs, statuses],
+  );
 
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return (jobs ?? [])
+    return active
       .filter((j) => !grades.length || grades.includes(j.grade))
       .filter(
         (j) =>
@@ -192,10 +242,11 @@ export default function Page() {
             ? postingId(b) - postingId(a)
             : b.score - a.score,
       );
-  }, [jobs, grades, query, sort]);
+  }, [active, grades, query, sort]);
 
-  const total = jobs?.length ?? 0;
-  const average = jobs?.length ? (jobs.reduce((sum, j) => sum + j.score, 0) / total).toFixed(1) : '–';
+  const total = active.length;
+  const average = total ? (active.reduce((sum, j) => sum + j.score, 0) / total).toFixed(1) : '–';
+  const elapsed = refresh.startedAt ? Math.max(0, Math.round((Date.now() - refresh.startedAt) / 1000)) : 0;
 
   const gradeBadge = (job: Job) => <span className={`grade grade-${job.grade}`}>{job.grade}</span>;
   const statusSelect = (job: Job) => (
@@ -232,7 +283,12 @@ export default function Page() {
     <>
       <header className="global-nav">
         <span>취업 상황판</span>
-        <a href="#jobs">공고</a>
+        <div className="nav-actions">
+          <button className="nav-button" onClick={startRefresh} disabled={refresh.running}>
+            {refresh.running ? '새로 고치는 중…' : '공고 새로 고침'}
+          </button>
+          <a href="#jobs">공고</a>
+        </div>
       </header>
 
       <section className="tile-dark">
@@ -246,7 +302,7 @@ export default function Page() {
           {GRADES.map((g) => (
             <div key={g}>
               <dt>{g}등급</dt>
-              <dd>{jobs?.filter((j) => j.grade === g).length ?? 0}</dd>
+              <dd>{active.filter((j) => j.grade === g).length}</dd>
             </div>
           ))}
           <div>
@@ -303,6 +359,16 @@ export default function Page() {
         <p className="note" role="status">
           {savedTo === 'file' && '지원 상태를 data/status.json에 저장했습니다.'}
           {savedTo === 'browser' && '파일에 저장하지 못해 브라우저에만 백업했습니다.'}
+        </p>
+        <p className="note" role="status">
+          {refresh.running && `공고 새로 고침: ${refresh.phase ?? ''} (경과 ${Math.floor(elapsed / 60)}분 ${elapsed % 60}초)`}
+          {!refresh.running &&
+            refresh.result &&
+            `새로 고침 완료: 신규 ${refresh.result.added}건 추가, 마감 ${refresh.result.closed}건 정리` +
+              (refresh.result.pending ? `, 평가 대기 ${refresh.result.pending}건(다음 새로 고침 때 평가)` : '') +
+              (refresh.result.failed ? `, 평가 실패 ${refresh.result.failed}건` : '') +
+              '.'}
+          {!refresh.running && refresh.error && `새로 고침 실패: ${refresh.error}`}
         </p>
 
         {error ? (

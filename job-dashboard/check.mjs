@@ -24,4 +24,6 @@ for (const kind of ['deep', 'cover']) {
   assert.equal((await (await fetch(`${base}/work/${kind}/1`)).json()).state, 'none', `${kind}: 작업 전 상태는 none`);
 }
 assert.equal((await fetch(`${base}/work/cover/1?pdf`)).status, 404, 'PDF가 없으면 404');
+// 공고 새로 고침 라우트: 상태 조회는 항상 running 값을 돌려준다.
+assert.equal(typeof (await (await fetch(`${base}/refresh`)).json()).running, 'boolean', '새로 고침 상태 조회');
 console.log(`ok: 공고 ${jobs.length}건, 라우트 검증 통과`);

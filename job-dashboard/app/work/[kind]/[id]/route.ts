@@ -1,16 +1,16 @@
-import { execFile, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
+import { htmlToText, runClaude } from '../../../lib/server';
 
 export const dynamic = 'force-dynamic';
 
 // career-ops 루트(이 앱의 상위 폴더). cv.md, modes/, reports/, data/, output/이 여기에 있다.
 const ROOT = process.env.CAREER_OPS_ROOT ?? path.join(/*turbopackIgnore: true*/ process.cwd(), '..');
-const TIMEOUT_MS = 15 * 60 * 1000;
 
 // 작업 종류별 프롬프트 파일, 결과 폴더, 작업자에게 허용하는 도구.
 // 도구 범위는 career-ops 웹 UI와 같다: deep은 읽기 + 웹 조회, cover는 읽기만.
@@ -32,7 +32,6 @@ const KINDS = {
   },
 };
 type Kind = keyof typeof KINDS;
-const RESTRICTED = ['Write', 'Edit', 'NotebookEdit', 'Bash', 'Task', 'WebFetch', 'WebSearch'];
 
 // ponytail: 진행 상태는 서버 메모리에만 둔다. 서버를 재시작하면 진행 중이던 작업은 잊히고 다시 눌러야 한다.
 // globalThis에 두는 이유는 개발 서버가 이 파일을 다시 컴파일해도 상태가 남게 하려는 것.
@@ -45,17 +44,6 @@ const state = ((globalThis as { __jobWorkState?: WorkState }).__jobWorkState ??=
 
 type Ctx = { params: Promise<{ kind: string; id: string }> };
 type Job = { company: string; title: string; url: string };
-
-const htmlToText = (html: string) =>
-  html
-    .replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ')
-    .replace(/<br\s*\/?>|<\/(p|div|li|tr|h\d|dt|dd)>/gi, '\n')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/[ \t]+/g, ' ')
-    .replace(/\s*\n\s*/g, '\n')
-    .trim();
 
 async function loadJd(id: string, url: string) {
   const html = await fetch(`https://www.saramin.co.kr/zf_user/jobs/relay/view-detail?rec_idx=${id}`).then(
@@ -75,37 +63,6 @@ async function loadJd(id: string, url: string) {
     return report.slice(start, end < 0 ? undefined : end);
   }
   return text || '(공고 본문을 불러오지 못했습니다. 본문이 이미지일 수 있습니다.)';
-}
-
-function runClaude(prompt: string, tools: string[]) {
-  return new Promise<string>((resolve, reject) => {
-    // 허용 목록에 없는 쓰기·명령 실행·웹 도구는 명시적으로 막고, MCP 서버는 하나도 불러오지 않는다.
-    // Windows에서 claude는 .cmd라 shell이 필요하다. 인수는 모두 고정값이고 프롬프트는 stdin으로 넘긴다.
-    const denied = RESTRICTED.filter((tool) => !tools.includes(tool));
-    const child = spawn(
-      'claude',
-      ['-p', '--output-format', 'text', '--strict-mcp-config', '--allowedTools', ...tools, '--disallowedTools', ...denied],
-      { cwd: ROOT, shell: true, windowsHide: true },
-    );
-    let out = '';
-    let err = '';
-    child.stdout.on('data', (chunk) => (out += chunk));
-    child.stderr.on('data', (chunk) => (err += chunk));
-    const timer = setTimeout(() => {
-      // shell을 거쳐 띄웠으므로 Windows에서는 프로세스 트리째 종료한다.
-      if (process.platform === 'win32') spawn('taskkill', ['/pid', String(child.pid), '/T', '/F']);
-      else child.kill();
-    }, TIMEOUT_MS);
-    child.on('error', reject);
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      // 모델이 답을 코드 펜스로 감싼 경우 벗겨 낸다.
-      const text = out.trim().replace(/^```(?:markdown)?\s*\n/, '').replace(/\n```$/, '');
-      if (code === 0 && text) resolve(text);
-      else reject(new Error(err.trim().slice(-500) || `claude 종료 코드 ${code}`));
-    });
-    child.stdin.end(prompt);
-  });
 }
 
 const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -243,7 +200,7 @@ async function work(kind: Kind, id: string, key: string) {
   const fill = (template: string) => template.replace(/\{\{(\w+)\}\}/g, (match, name) => values[name] ?? match);
 
   state.phase.set(key, review ? '초안을 쓰는 중 (1/3)' : '조사하는 중');
-  let text = await runClaude(fill(await readFile(here(prompt), 'utf8')), tools);
+  let text = await runClaude(fill(await readFile(here(prompt), 'utf8')), tools, ROOT);
 
   await mkdir(dir, { recursive: true });
   if (review) {
@@ -251,7 +208,7 @@ async function work(kind: Kind, id: string, key: string) {
     await writeFile(path.join(/*turbopackIgnore: true*/ dir, `${id}.draft.md`), text + '\n', 'utf8');
     state.phase.set(key, '근거 확인과 검토 중 (2/3)');
     values.draft = text;
-    text = await runClaude(fill(await readFile(here(review), 'utf8')), tools);
+    text = await runClaude(fill(await readFile(here(review), 'utf8')), tools, ROOT);
 
     // 글자 수, 상투어, 근거 없는 숫자는 모델이 아니라 코드로 점검해 검토 결과에 붙인다.
     const sources = [
