@@ -214,6 +214,7 @@ async function work(kind: Kind, id: string, key: string) {
     const sources = [
       await readOrEmpty(path.join(/*turbopackIgnore: true*/ ROOT, 'cv.md')),
       await readOrEmpty(path.join(/*turbopackIgnore: true*/ ROOT, 'interview-prep', 'story-bank.md')),
+      await readOrEmpty(path.join(/*turbopackIgnore: true*/ ROOT, 'modes', 'voice.md')),
       await readOrEmpty(path.join(/*turbopackIgnore: true*/ KINDS.deep.dir, `${id}.md`)),
       values.jd,
       values.job_json,
